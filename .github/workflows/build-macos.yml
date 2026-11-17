@@ -1,22 +1,8 @@
 name: Build macOS
 
+# Fork: manual only. A push to main used to start a macOS runner.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
-    paths:
-      - 'lib/**'
-      - 'macos/**'
-      - 'pubspec.yaml'
-      - '.github/workflows/build-macos.yml'
-  pull_request:
-    paths:
-      - 'lib/**'
-      - 'macos/**'
-      - 'pubspec.yaml'
-      - '.github/workflows/build-macos.yml'
 
 env:
   FLUTTER_VERSION: '3.44.3'
