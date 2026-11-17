@@ -115,7 +115,12 @@ jobs:
           targets: aarch64-apple-ios
 
       - name: Get dependencies
-        run: flutter pub get
+        run: |
+          set -euo pipefail
+          # Disable SwiftPM before pub get so plugins are only linked via CocoaPods
+          flutter config --no-enable-swift-package-manager
+          rm -rf ios/Flutter/ephemeral/Packages
+          flutter pub get
 
       - name: Show toolchain
         run: |
@@ -234,50 +239,17 @@ jobs:
       - name: Archive
         run: |
           set -euo pipefail
-          if [ -z "${KEY_PATH:-}" ] || [ ! -f "$KEY_PATH" ]; then
-            echo "::error::App Store Connect API key file is missing"
-            exit 1
-          fi
-          mkdir -p build/ios/logs build/ios/archive
-          set -o pipefail
-          xcodebuild \
-            -workspace ios/Runner.xcworkspace \
-            -scheme Runner \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -archivePath "$GITHUB_WORKSPACE/build/ios/archive/Runner.xcarchive" \
-            -derivedDataPath "$GITHUB_WORKSPACE/build/ios/DerivedData" \
-            archive \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-            2>&1 | tee build/ios/logs/archive.log
-
-      - name: Export IPA
-        run: |
-          set -euo pipefail
-          if [ -z "${KEY_PATH:-}" ] || [ ! -f "$KEY_PATH" ]; then
-            echo "::error::App Store Connect API key file is missing"
-            exit 1
-          fi
-          EXPORT_PATH="$GITHUB_WORKSPACE/build/ios/ipa"
           mkdir -p build/ios/logs
-          export_archive() {
-            rm -rf "$EXPORT_PATH"
-            mkdir -p "$EXPORT_PATH"
-            xcodebuild \
-              -exportArchive \
-              -archivePath "$GITHUB_WORKSPACE/build/ios/archive/Runner.xcarchive" \
-              -exportPath "$EXPORT_PATH" \
-              -exportOptionsPlist "$GITHUB_WORKSPACE/ios/ExportOptions-AppStore.plist" \
-              2>&1 | tee -a build/ios/logs/export.log
-          }
+          echo "--- Generated SwiftPM package (should have no plugin deps) ---"
+          cat ios/Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage/Package.swift 2>/dev/null || echo "(none)"
           set -o pipefail
-          if ! export_archive; then
-            echo "Export failed. Retrying once in 45s so a newly created distribution certificate can finish propagating." | tee -a build/ios/logs/export.log
-            sleep 45
-            export_archive
-          fi
+          flutter build ipa --release --no-pub \
+            --build-number="$BUILD_NUMBER" \
+            --dart-define=is_appstore_build=true \
+            --dart-define=KOMET_REVIEW_PHONE= \
+            --dart-define=KOMET_REVIEW_PAYLOAD= \
+            --export-options-plist="$GITHUB_WORKSPACE/ios/ExportOptions-AppStore.plist" \
+            2>&1 | tee build/ios/logs/archive.log
 
       - name: Stage IPA
         run: |
