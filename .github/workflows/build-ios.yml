@@ -1,22 +1,8 @@
 name: Build iOS
 
+# Fork: manual only. A push to main used to start a macOS runner.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
-    paths:
-      - 'lib/**'
-      - 'ios/**'
-      - 'pubspec.yaml'
-      - '.github/workflows/build-ios.yml'
-  pull_request:
-    paths:
-      - 'lib/**'
-      - 'ios/**'
-      - 'pubspec.yaml'
-      - '.github/workflows/build-ios.yml'
 
 env:
   FLUTTER_VERSION: '3.44.3'
@@ -79,9 +65,9 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>get-task-allow</key><true/>
-            <key>application-identifier</key><string>ru.komet.app</string>
+            <key>application-identifier</key><string>com.starykh.komet</string>
             <key>keychain-access-groups</key>
-            <array><string>ru.komet.app</string></array>
+            <array><string>com.starykh.komet</string></array>
           </dict>
           </plist>
           PLIST

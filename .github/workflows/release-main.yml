@@ -1,10 +1,10 @@
 name: Release (main)
 
+# Fork: manual only. The macos and ios jobs used to start two macOS runners
+# on every push to main. Android, Windows, and Linux in this workflow are
+# manual as well, because the release job publishes them together.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 permissions:
   contents: write
@@ -233,9 +233,9 @@ jobs:
           <dict>
             <key>platform-application</key><true/>
             <key>get-task-allow</key><true/>
-            <key>application-identifier</key><string>ru.komet.app</string>
+            <key>application-identifier</key><string>com.starykh.komet</string>
             <key>keychain-access-groups</key>
-            <array><string>ru.komet.app</string></array>
+            <array><string>com.starykh.komet</string></array>
             <key>com.apple.private.security.no-container</key><true/>
           </dict>
           </plist>

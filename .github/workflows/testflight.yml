@@ -1,0 +1,322 @@
+name: TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number_offset:
+        description: 'Non-negative integer added to github.run_number to form CFBundleVersion'
+        required: false
+        default: '0'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_VERSION: '3.47.0'
+  DEVELOPMENT_TEAM: '2587CA238D'
+
+jobs:
+  testflight:
+    runs-on: macos-latest
+    timeout-minutes: 180
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Check App Store Connect secrets
+        env:
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${ASC_KEY_ID:-}" ] || missing+=("ASC_KEY_ID")
+          [ -n "${ASC_ISSUER_ID:-}" ] || missing+=("ASC_ISSUER_ID")
+          [ -n "${ASC_PRIVATE_KEY:-}" ] || missing+=("ASC_PRIVATE_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing repository secrets: ${missing[*]}"
+            exit 1
+          fi
+          if ! [[ "$ASC_KEY_ID" =~ ^[A-Za-z0-9]+$ ]]; then
+            echo "::error::ASC_KEY_ID must be the alphanumeric App Store Connect key id, not the .p8 file"
+            exit 1
+          fi
+          if ! [[ "$ASC_ISSUER_ID" =~ ^[0-9a-fA-F-]+$ ]]; then
+            echo "::error::ASC_ISSUER_ID must be the App Store Connect issuer UUID"
+            exit 1
+          fi
+
+      - name: Install App Store Connect API key
+        env:
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ASC_PRIVATE_KEY:-}" ]; then
+            echo "::error::Missing repository secret ASC_PRIVATE_KEY"
+            exit 1
+          fi
+          umask 077
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s' "$ASC_PRIVATE_KEY" | tr -d $'\r' > "$KEY_PATH"
+          line_count=$(grep -c '' "$KEY_PATH" || true)
+          if [ "$line_count" -le 1 ] && grep -F -q '\n' "$KEY_PATH"; then
+            perl -0pe 's/\\n/\n/g' "$KEY_PATH" > "$KEY_PATH.pem"
+            mv "$KEY_PATH.pem" "$KEY_PATH"
+          fi
+          if [ -n "$(tail -c 1 "$KEY_PATH")" ]; then
+            printf '\n' >> "$KEY_PATH"
+          fi
+          chmod 600 "$KEY_PATH"
+          if ! grep -q 'BEGIN PRIVATE KEY' "$KEY_PATH" || ! grep -q 'END PRIVATE KEY' "$KEY_PATH"; then
+            echo "::error::ASC_PRIVATE_KEY is not a PEM .p8 (missing BEGIN/END PRIVATE KEY lines)"
+            exit 1
+          fi
+          unset ASC_PRIVATE_KEY
+          install_copy() {
+            mkdir -p "$1"
+            chmod 700 "$1"
+            cp "$KEY_PATH" "$1/AuthKey_${ASC_KEY_ID}.p8"
+            chmod 600 "$1/AuthKey_${ASC_KEY_ID}.p8"
+          }
+          install_copy "$HOME/.appstoreconnect/private_keys"
+          install_copy "$HOME/private_keys"
+          install_copy "$HOME/.private_keys"
+          echo "KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+          echo "Installed App Store Connect API key ($(wc -c < "$KEY_PATH" | tr -d ' ') bytes)"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Show toolchain
+        run: |
+          set -euo pipefail
+          flutter --version
+          xcodebuild -version
+          xcode-select -p
+          if ! command -v pod >/dev/null 2>&1; then
+            brew install cocoapods
+          fi
+          pod --version
+
+      - name: Drop the max URL scheme
+        run: |
+          set -euo pipefail
+          PLIST="ios/Runner/Info.plist"
+          SCHEMES=":CFBundleURLTypes:0:CFBundleURLSchemes"
+          COUNT=$(/usr/libexec/PlistBuddy -c "Print $SCHEMES" "$PLIST" | grep -c '^ ' || true)
+          for ((i = COUNT - 1; i >= 0; i--)); do
+            if [ "$(/usr/libexec/PlistBuddy -c "Print $SCHEMES:$i" "$PLIST")" = "max" ]; then
+              /usr/libexec/PlistBuddy -c "Delete $SCHEMES:$i" "$PLIST"
+            fi
+          done
+          /usr/libexec/PlistBuddy -c "Print $SCHEMES" "$PLIST"
+
+      - name: Resolve build number
+        id: build
+        env:
+          BUILD_OFFSET: ${{ inputs.build_number_offset }}
+        run: |
+          set -euo pipefail
+          OFFSET="${BUILD_OFFSET:-0}"
+          if [ -z "$OFFSET" ]; then
+            OFFSET=0
+          fi
+          if ! [[ "$OFFSET" =~ ^[0-9]+$ ]]; then
+            echo "::error::build_number_offset must be a non-negative integer"
+            exit 1
+          fi
+          BUILD_NUMBER=$((GITHUB_RUN_NUMBER + OFFSET))
+          if [ "$BUILD_NUMBER" -lt 1 ]; then
+            echo "::error::CFBundleVersion must be at least 1"
+            exit 1
+          fi
+          PUBSPEC_VERSION=$(awk '/^version:/{print $2; exit}' pubspec.yaml)
+          VERSION_NAME="${PUBSPEC_VERSION%%+*}"
+          if ! [[ "$VERSION_NAME" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+            echo "::error::Could not read the version name from pubspec.yaml (got '${PUBSPEC_VERSION:-}')"
+            exit 1
+          fi
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo "### TestFlight"
+            echo ""
+            echo "- Version: \`$VERSION_NAME\` (from pubspec, build name is not overridden)"
+            echo "- Build: \`$BUILD_NUMBER\` (run $GITHUB_RUN_NUMBER + offset $OFFSET)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Configure the Xcode project
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios/logs
+          set -o pipefail
+          flutter config --no-enable-swift-package-manager
+          flutter build ios --config-only --release --no-codesign --no-pub \
+            --build-number="$BUILD_NUMBER" \
+            --dart-define=is_appstore_build=true \
+            --dart-define=KOMET_REVIEW_PHONE= \
+            --dart-define=KOMET_REVIEW_PAYLOAD= \
+            2>&1 | tee build/ios/logs/flutter-config.log
+
+      - name: Unlock login keychain
+        run: |
+          set -euo pipefail
+          if ! security unlock-keychain -p "" "$HOME/Library/Keychains/login.keychain-db"; then
+            echo "::warning::Could not unlock the login keychain with an empty password"
+          fi
+
+      - name: Archive
+        run: |
+          set -euo pipefail
+          if [ -z "${KEY_PATH:-}" ] || [ ! -f "$KEY_PATH" ]; then
+            echo "::error::App Store Connect API key file is missing"
+            exit 1
+          fi
+          mkdir -p build/ios/logs build/ios/archive
+          set -o pipefail
+          xcodebuild \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$GITHUB_WORKSPACE/build/ios/archive/Runner.xcarchive" \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/ios/DerivedData" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            archive \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+            CODE_SIGN_STYLE=Automatic \
+            2>&1 | tee build/ios/logs/archive.log
+
+      - name: Export IPA
+        run: |
+          set -euo pipefail
+          if [ -z "${KEY_PATH:-}" ] || [ ! -f "$KEY_PATH" ]; then
+            echo "::error::App Store Connect API key file is missing"
+            exit 1
+          fi
+          EXPORT_PATH="$GITHUB_WORKSPACE/build/ios/ipa"
+          mkdir -p build/ios/logs
+          export_archive() {
+            rm -rf "$EXPORT_PATH"
+            mkdir -p "$EXPORT_PATH"
+            xcodebuild \
+              -exportArchive \
+              -archivePath "$GITHUB_WORKSPACE/build/ios/archive/Runner.xcarchive" \
+              -exportPath "$EXPORT_PATH" \
+              -exportOptionsPlist "$GITHUB_WORKSPACE/ios/ExportOptions-AppStore.plist" \
+              -allowProvisioningUpdates \
+              -authenticationKeyPath "$KEY_PATH" \
+              -authenticationKeyID "$ASC_KEY_ID" \
+              -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+              2>&1 | tee -a build/ios/logs/export.log
+          }
+          set -o pipefail
+          if ! export_archive; then
+            echo "Export failed. Retrying once in 45s so a newly created distribution certificate can finish propagating." | tee -a build/ios/logs/export.log
+            sleep 45
+            export_archive
+          fi
+
+      - name: Stage IPA
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          ipas=(build/ios/ipa/*.ipa)
+          if [ "${#ipas[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one IPA in build/ios/ipa, found ${#ipas[@]}"
+            exit 1
+          fi
+          mkdir -p dist
+          staged="dist/Komet-${VERSION_NAME}-${BUILD_NUMBER}.ipa"
+          cp "${ipas[0]}" "$staged"
+          echo "IPA_PATH=$GITHUB_WORKSPACE/$staged" >> "$GITHUB_ENV"
+          echo "Staged $staged"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: komet-ios-${{ steps.build.outputs.number }}
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload to App Store Connect
+        run: |
+          set -euo pipefail
+          if [ -z "${IPA_PATH:-}" ] || [ ! -f "$IPA_PATH" ]; then
+            echo "::error::IPA is missing"
+            exit 1
+          fi
+          mkdir -p build/ios/logs
+          set -o pipefail
+          if xcrun --find altool >/dev/null 2>&1; then
+            xcrun altool --upload-app \
+              -f "$IPA_PATH" \
+              -t ios \
+              --apiKey "$ASC_KEY_ID" \
+              --apiIssuer "$ASC_ISSUER_ID" \
+              --show-progress \
+              2>&1 | tee build/ios/logs/upload.log
+          else
+            echo "altool is not available on this Xcode. Uploading with iTMSTransporter." | tee build/ios/logs/upload.log
+            xcrun iTMSTransporter -m upload \
+              -assetFile "$IPA_PATH" \
+              -apiKey "$ASC_KEY_ID" \
+              -apiIssuer "$ASC_ISSUER_ID" \
+              2>&1 | tee -a build/ios/logs/upload.log
+          fi
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testflight-build-log-${{ github.run_id }}
+          path: |
+            build/ios/logs/**
+            build/ios/ipa/Packaging.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Delete App Store Connect API key
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${KEY_PATH:-}" ]; then
+            rm -f "$KEY_PATH"
+          fi
+          rm -f "$HOME/.appstoreconnect/private_keys"/AuthKey_*.p8
+          rm -f "$HOME/private_keys"/AuthKey_*.p8
+          rm -f "$HOME/.private_keys"/AuthKey_*.p8
+          rm -f "$RUNNER_TEMP"/AuthKey_*.p8
+          echo "Removed App Store Connect API key files"
