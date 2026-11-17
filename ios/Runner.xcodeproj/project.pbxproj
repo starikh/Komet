@@ -723,9 +723,13 @@
 					"@executable_path/Frameworks",
 				);
 				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_IDENTITY = "Apple Distribution";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";
+				CODE_SIGN_STYLE = Manual;
 				DEVELOPMENT_TEAM = 2587CA238D;
 				PRODUCT_BUNDLE_IDENTIFIER = com.starykh.komet;
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "Komet AppStore";
+				PROVISIONING_PROFILE_SPECIFIER = "Komet AppStore";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
