@@ -102,6 +102,20 @@ jobs:
           echo "KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
           echo "Installed App Store Connect API key ($(wc -c < "$KEY_PATH" | tr -d ' ') bytes)"
 
+      - name: Select Xcode 26
+        run: |
+          set -euo pipefail
+          ls -d /Applications/Xcode*.app || true
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -v -i beta | sort -V | tail -1 || true)
+          [ -z "$XC" ] && XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$XC" ]; then
+            echo "::error::No Xcode 26 on this runner. App Store Connect requires the iOS 26 SDK. Try runner macos-26."
+            exit 1
+          fi
+          sudo xcode-select -s "$XC/Contents/Developer"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
