@@ -197,6 +197,32 @@ jobs:
             echo "::warning::Could not unlock the login keychain with an empty password"
           fi
 
+      - name: Install signing certificate and profile
+        env:
+          DIST_P12_BASE64: ${{ secrets.DIST_P12_BASE64 }}
+          DIST_P12_PASSWORD: ${{ secrets.DIST_P12_PASSWORD }}
+          APPSTORE_PROFILE_BASE64: ${{ secrets.APPSTORE_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KCPASS="$(uuidgen)"
+          printf '%s' "$DIST_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/dist.p12"
+          security create-keychain -p "$KCPASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KCPASS" "$KC"
+          security import "$RUNNER_TEMP/dist.p12" -P "$DIST_P12_PASSWORD" -A -t cert -f pkcs12 -k "$KC"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPASS" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | sed 's/"//g')
+          rm -f "$RUNNER_TEMP/dist.p12"
+          PP="$RUNNER_TEMP/komet.mobileprovision"
+          printf '%s' "$APPSTORE_PROFILE_BASE64" | base64 --decode > "$PP"
+          UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" /dev/stdin <<< "$(security cms -D -i "$PP")")
+          for d in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$d"; cp "$PP" "$d/$UUID.mobileprovision"
+          done
+          security find-identity -v -p codesigning "$KC"
+          echo "Installed profile $UUID"
+
       - name: Archive
         run: |
           set -euo pipefail
@@ -214,14 +240,9 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$GITHUB_WORKSPACE/build/ios/archive/Runner.xcarchive" \
             -derivedDataPath "$GITHUB_WORKSPACE/build/ios/DerivedData" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$KEY_PATH" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             archive \
             COMPILER_INDEX_STORE_ENABLE=NO \
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-            CODE_SIGN_STYLE=Automatic \
             2>&1 | tee build/ios/logs/archive.log
 
       - name: Export IPA
@@ -241,10 +262,6 @@ jobs:
               -archivePath "$GITHUB_WORKSPACE/build/ios/archive/Runner.xcarchive" \
               -exportPath "$EXPORT_PATH" \
               -exportOptionsPlist "$GITHUB_WORKSPACE/ios/ExportOptions-AppStore.plist" \
-              -allowProvisioningUpdates \
-              -authenticationKeyPath "$KEY_PATH" \
-              -authenticationKeyID "$ASC_KEY_ID" \
-              -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
               2>&1 | tee -a build/ios/logs/export.log
           }
           set -o pipefail
