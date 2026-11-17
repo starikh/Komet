@@ -3,6 +3,12 @@ name: TestFlight
 on:
   workflow_dispatch:
     inputs:
+      runner:
+        description: 'macOS runner image'
+        required: false
+        default: 'macos-15-intel'
+        type: choice
+        options: [macos-15-intel, macos-15, macos-14, macos-26, macos-latest]
       build_number_offset:
         description: 'Non-negative integer added to github.run_number to form CFBundleVersion'
         required: false
@@ -22,7 +28,7 @@ env:
 
 jobs:
   testflight:
-    runs-on: macos-latest
+    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
     timeout-minutes: 180
     env:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
