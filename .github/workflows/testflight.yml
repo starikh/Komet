@@ -183,12 +183,20 @@ jobs:
           mkdir -p build/ios/logs
           set -o pipefail
           flutter config --no-enable-swift-package-manager
-          flutter build ios --config-only --release --no-codesign --no-pub \
-            --build-number="$BUILD_NUMBER" \
-            --dart-define=is_appstore_build=true \
-            --dart-define=KOMET_REVIEW_PHONE= \
-            --dart-define=KOMET_REVIEW_PAYLOAD= \
-            2>&1 | tee build/ios/logs/flutter-config.log
+          for attempt in 1 2 3 4; do
+            if flutter build ios --config-only --release --no-codesign --no-pub \
+              --build-number="$BUILD_NUMBER" \
+              --dart-define=is_appstore_build=true \
+              --dart-define=KOMET_REVIEW_PHONE= \
+              --dart-define=KOMET_REVIEW_PAYLOAD= \
+              2>&1 | tee build/ios/logs/flutter-config.log; then
+              exit 0
+            fi
+            echo "Config attempt $attempt failed (often a transient network error), retrying in 30s"
+            rm -rf build/ios/SourcePackages
+            sleep 30
+          done
+          exit 1
 
       - name: Unlock login keychain
         run: |
